@@ -3,8 +3,6 @@
 # Copyright FunASR (https://github.com/FunAudioLLM/SenseVoice). All Rights Reserved.
 #  MIT License  (https://opensource.org/licenses/MIT)
 
-
-import torch
 import os.path
 import librosa
 import numpy as np
@@ -94,7 +92,7 @@ class SenseVoiceSmall:
             return self.lid_dict[lid]
         else:
             raise ValueError(
-                f"The language {l} is not in {list(self.lid_dict.keys())}"
+                f"The language {lid} is not in {list(self.lid_dict.keys())}"
             )
             
     def _get_tnid(self, tnid):
@@ -181,12 +179,14 @@ class SenseVoiceSmall:
             )
             for b in range(feats.shape[0]):
                 # back to torch.Tensor
-                if isinstance(ctc_logits, np.ndarray):
-                    ctc_logits = torch.from_numpy(ctc_logits).float()
+                # if isinstance(ctc_logits, np.ndarray):
+                #     ctc_logits = torch.from_numpy(ctc_logits).float()
                 # support batch_size=1 only currently
                 x = ctc_logits[b, : encoder_out_lens[b].item(), :]
-                yseq = x.argmax(dim=-1)
-                yseq = torch.unique_consecutive(yseq, dim=-1)
+                yseq = np.argmax(x, axis=-1)
+                # Use np.diff and np.where instead of torch.unique_consecutive.
+                mask = np.concatenate(([True], np.diff(yseq) != 0))
+                yseq = yseq[mask]
 
                 mask = yseq != self.blank_id
                 token_int = yseq[mask].tolist()
@@ -196,7 +196,24 @@ class SenseVoiceSmall:
         return asr_res
 
     def load_data(self, wav_content: Union[str, np.ndarray, List[str]], fs: int = None) -> List:
+        
+        def convert_to_wav(input_path, output_path):
+            from pydub import AudioSegment
+            try:
+                audio = AudioSegment.from_mp3(input_path)
+                audio.export(output_path, format="wav")
+                print("音频文件为mp3格式，已转换为wav格式")
+                
+            except Exception as e:
+                print(f"转换失败:{e}")
+
         def load_wav(path: str) -> np.ndarray:
+            if not path.lower().endswith('.wav'):
+                import os
+                input_path = path
+                path = os.path.splitext(path)[0]+'.wav'
+                convert_to_wav(input_path,path) #将mp3格式转换成wav格式
+
             waveform, _ = librosa.load(path, sr=fs)
             return waveform
 
@@ -215,6 +232,10 @@ class SenseVoiceSmall:
         feats, feats_len = [], []
         for waveform in waveform_list:
             speech, _ = self.frontend.fbank(waveform)
+
+            if speech is None or speech.size == 0:
+                print("detected speech size {speech.size}")
+                raise ValueError("Empty speech detected, skipping this waveform.")
             feat, feat_len = self.frontend.lfr_cmvn(speech)
             feats.append(feat)
             feats_len.append(feat_len)
